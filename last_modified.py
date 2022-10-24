@@ -393,7 +393,8 @@ class LastModifiedService(Callback):
         ):
             for sig, callback in self.signal_map.items():
                 self.dbstate.db.connect(sig, callback)
-        self.build_history()
+        with self.history_lock:
+            self.__build_history()
 
     def __register_signals(self, object_type):
         """
@@ -406,31 +407,30 @@ class LastModifiedService(Callback):
             self.signal_map["{}-{}".format(lower_type, sig)] = update_function
         self.signal_map["{}-delete".format(lower_type)] = delete_function
 
-    def build_history(self):
+    def __build_history(self):
         """
         Build change history.
         """
-        with self.history_lock:
-            global_history = []
-            self.change_history = {}
-            self.dbid = self.dbstate.db.get_dbid()
-            for obj_type in CATEGORIES_LANG:
-                if obj_type != "Global":
-                    handle_list = []
-                    for (obj_handle, change) in self._fetch_history(
-                            obj_type, self.depth
-                    ):
-                        handle_list.append((obj_type, obj_handle, -change))
-                    formatted_history = get_formatted_handle_list(
-                        self.dbstate.db, handle_list
-                    )
-                    self.change_history[obj_type] = formatted_history
-                    global_history = global_history + formatted_history
-            global_history.sort(key=lambda x: x[3], reverse=True)
-            self.change_history["Global"] = global_history[: self.depth]
+        global_history = []
+        self.change_history = {}
+        self.dbid = self.dbstate.db.get_dbid()
+        for obj_type in CATEGORIES_LANG:
+            if obj_type != "Global":
+                handle_list = []
+                for (obj_handle, change) in self.__fetch_history(
+                    obj_type, self.depth
+                ):
+                    handle_list.append((obj_type, obj_handle, -change))
+                formatted_history = get_formatted_handle_list(
+                    self.dbstate.db, handle_list
+                )
+                self.change_history[obj_type] = formatted_history
+                global_history = global_history + formatted_history
+        global_history.sort(key=lambda x: x[3], reverse=True)
+        self.change_history["Global"] = global_history[: self.depth]
         self.emit("change-notification", ())
 
-    def _fetch_history(self, obj_type, count):
+    def __fetch_history(self, obj_type, count):
         """
         Fetch history from database.
         """
@@ -452,13 +452,10 @@ class LastModifiedService(Callback):
         with self.history_lock:
             if not self.dbstate.is_open():
                 return {}
-            if self.dbid != self.dbstate.db.get_dbid():
+            if self.dbid and self.dbid != self.dbstate.db.get_dbid():
                 return {}
-            if (
-                    "Global" in self.change_history
-                    and not self.change_history["Global"]
-            ):
-                return {}
+            if self.change_history == {}:
+                self.__build_history()
             return self.change_history
 
     def update_change_history(self, object_handles, object_type):
@@ -493,8 +490,14 @@ class LastModifiedService(Callback):
         """
         with self.history_lock:
             for (
-                    index,
-                    (object_type, object_handle, object_label, change, change_string),
+                index,
+                (
+                    object_type,
+                    object_handle,
+                    object_label,
+                    change,
+                    change_string,
+                ),
             ) in enumerate(self.change_history[category]):
                 object_label, dummy_object = get_object_label(
                     self.dbstate.db, object_type, object_handle
